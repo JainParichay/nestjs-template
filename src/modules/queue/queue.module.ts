@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { QueueService } from './services/queue.service';
 import { EmailProcessor } from './processors/email/email.processor';
 import { SmsProcessor } from './processors/sms/sms.processor';
+import { DlqProcessor } from './processors/dlq/dlq.processor';
 import { QUEUE_NAMES } from './queue.constants';
 
 @Module({
@@ -41,9 +42,12 @@ import { QUEUE_NAMES } from './queue.constants';
       {
         name: QUEUE_NAMES.SMS,
       },
+      {
+        name: 'dlq',
+      },
     ),
   ],
-  providers: [QueueService, EmailProcessor, SmsProcessor],
+  providers: [QueueService, EmailProcessor, SmsProcessor, DlqProcessor],
   exports: [QueueService],
 })
 export class QueueModule {}

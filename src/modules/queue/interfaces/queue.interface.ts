@@ -10,10 +10,14 @@ export interface QueueJobOptions {
     delay: number;
   };
   delay?: number;
-  priority?: number;
+  priority?: 1 | 2 | 3 | 4 | 5; // 1 is highest priority
   removeOnComplete?: boolean | number;
   removeOnFail?: boolean | number;
   timeout?: number;
+  limiter?: {
+    max: number; // Max jobs per duration
+    duration: number; // Duration in milliseconds
+  };
   retryOnError?: boolean;
   retryOnTimeout?: boolean;
   maxRetriesPerSecond?: number;

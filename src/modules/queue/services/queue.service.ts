@@ -23,6 +23,8 @@ export class QueueService {
     private readonly notificationQueue: Queue,
     @InjectQueue(QUEUE_NAMES.SMS)
     private readonly smsQueue: Queue,
+    @InjectQueue('dlq')
+    private readonly dlqQueue: Queue,
     private readonly configService: ConfigService,
   ) {
     this.setupQueueListeners();
@@ -39,11 +41,14 @@ export class QueueService {
         this.logger.error(`Queue ${queue.name} error:`, error);
       });
 
-      queue.on('failed', (job: Job, error: Error) => {
+      queue.on('failed', async (job: Job, error: Error) => {
         this.logger.error(
           `Job ${job.id} in queue ${queue.name} failed:`,
           error.stack,
         );
+
+        // Move failed job to DLQ
+        await this.moveToDlq(queue.name, job, error);
       });
 
       queue.on('completed', (job: Job) => {
@@ -55,32 +60,87 @@ export class QueueService {
     });
   }
 
+  private async moveToDlq(queueName: string, job: Job, error: Error) {
+    try {
+      await this.dlqQueue.add(
+        'failed-job',
+        {
+          queueName,
+          originalJob: job.data,
+          error: error.message,
+          stack: error.stack,
+          attemptsMade: job.attemptsMade,
+          timestamp: new Date().toISOString(),
+        },
+        {
+          removeOnComplete: true,
+          removeOnFail: false,
+        },
+      );
+    } catch (dlqError) {
+      this.logger.error(`Failed to move job ${job.id} to DLQ:`, dlqError.stack);
+    }
+  }
+
   async addToDefaultQueue<T>(
     job: QueueJob<T>,
     options?: QueueJobOptions,
   ): Promise<Job<T>> {
-    return this.defaultQueue.add(job.name, job.data, options);
+    return this.defaultQueue.add(
+      job.name,
+      job.data,
+      this.processOptions(options),
+    );
   }
 
   async addToEmailQueue<T>(
     job: QueueJob<T>,
     options?: QueueJobOptions,
   ): Promise<Job<T>> {
-    return this.emailQueue.add(job.name, job.data, options);
+    return this.emailQueue.add(
+      job.name,
+      job.data,
+      this.processOptions(options),
+    );
   }
 
   async addToNotificationQueue<T>(
     job: QueueJob<T>,
     options?: QueueJobOptions,
   ): Promise<Job<T>> {
-    return this.notificationQueue.add(job.name, job.data, options);
+    return this.notificationQueue.add(
+      job.name,
+      job.data,
+      this.processOptions(options),
+    );
   }
 
   async addToSmsQueue<T>(
     job: QueueJob<T>,
     options?: QueueJobOptions,
   ): Promise<Job<T>> {
-    return this.smsQueue.add(job.name, job.data, options);
+    return this.smsQueue.add(job.name, job.data, this.processOptions(options));
+  }
+
+  private processOptions(options?: QueueJobOptions) {
+    if (!options) return {};
+
+    const processedOptions: any = { ...options };
+
+    // Process rate limiter
+    if (options.limiter) {
+      processedOptions.limiter = {
+        max: options.limiter.max,
+        duration: options.limiter.duration,
+      };
+    }
+
+    // Process priority (Bull uses 1 as highest, we use 1 as highest)
+    if (options.priority) {
+      processedOptions.priority = options.priority;
+    }
+
+    return processedOptions;
   }
 
   async getJobStatus(queueName: string, jobId: string): Promise<JobStatus> {

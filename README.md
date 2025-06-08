@@ -232,15 +232,20 @@ const isMatch = bcryptService.compare('password', hashed);
 
 ## Queue System
 
-The template includes a robust queue system using Bull with Redis as the backend. It provides:
+The queue system uses Bull with Redis as the backend, providing a robust job processing solution with the following features:
 
-- Multiple queue support (default, email, notification)
+## Features
+
+- Multiple queue support (default, email, notification, SMS)
 - Job retry mechanism with exponential backoff
 - Job progress tracking
 - Queue statistics and monitoring
 - Automatic job cleanup
+- Rate limiting
+- Job prioritization
+- Dead Letter Queue (DLQ) for failed jobs
 
-### Available Queues
+## Available Queues
 
 1. **Default Queue**
 
@@ -249,53 +254,164 @@ The template includes a robust queue system using Bull with Redis as the backend
 
 2. **Email Queue**
 
-   - Dedicated queue for email-related tasks
+   - Dedicated queue for email tasks
    - Processors:
-     - `send-otp`: Send OTP emails
+     - `send-otp`: Send OTP via email
      - `send-welcome`: Send welcome emails
 
-3. **Notification Queue**
-   - Queue for push notifications and alerts
-   - Ready for custom notification processors
+3. **SMS Queue**
 
-### Usage Example
+   - Dedicated queue for SMS/WhatsApp messages
+   - Processors:
+     - `send-otp`: Send OTP via SMS/WhatsApp
+     - `send-alert`: Send alert messages
+
+4. **Notification Queue**
+
+   - For push notifications and alerts
+   - Ready for custom processors
+
+5. **Dead Letter Queue (DLQ)**
+   - Automatically receives failed jobs
+   - Provides error tracking and recovery options
+
+## Usage Examples
+
+### Basic Job Addition
 
 ```typescript
-// Inject the QueueProvider
-constructor(private queueProvider: QueueProvider) {}
-
-// Add a job to the email queue
-await this.queueProvider.addToEmailQueue({
+// Add a job to email queue
+await this.queueService.addToEmailQueue({
   name: 'send-otp',
   data: {
     to: 'user@example.com',
     otp: '123456',
   },
-  options: {
+});
+```
+
+### With Rate Limiting
+
+```typescript
+// Limit to 100 SMS per minute
+await this.queueService.addToSmsQueue(
+  {
+    name: 'send-otp',
+    data: {
+      to: '+1234567890',
+      otp: '123456',
+    },
+  },
+  {
+    limiter: {
+      max: 100,
+      duration: 60 * 1000, // 1 minute
+    },
+  },
+);
+```
+
+### With Priority
+
+```typescript
+// High priority OTP
+await this.queueService.addToSmsQueue(
+  {
+    name: 'send-otp',
+    data: {
+      to: '+1234567890',
+      otp: '123456',
+    },
+  },
+  {
+    priority: 1, // Highest priority (1-5, 1 being highest)
+  },
+);
+```
+
+### With Retry Options
+
+```typescript
+await this.queueService.addToEmailQueue(
+  {
+    name: 'send-otp',
+    data: {
+      to: 'user@example.com',
+      otp: '123456',
+    },
+  },
+  {
     attempts: 3,
     backoff: {
       type: 'exponential',
       delay: 1000,
     },
+    removeOnComplete: true,
+    removeOnFail: false,
   },
-});
-
-// Get job status
-const status = await this.queueProvider.getJobStatus('email', jobId);
-
-// Get queue statistics
-const stats = await this.queueProvider.getQueueStats('email');
+);
 ```
 
-### Environment Variables
+## Job Options
+
+- `attempts`: Number of retry attempts
+- `backoff`: Retry delay strategy
+  - `type`: 'fixed' | 'exponential'
+  - `delay`: Delay in milliseconds
+- `priority`: Job priority (1-5, 1 being highest)
+- `limiter`: Rate limiting options
+  - `max`: Maximum jobs per duration
+  - `duration`: Duration in milliseconds
+- `removeOnComplete`: Remove job after completion
+- `removeOnFail`: Remove job after failure
+- `timeout`: Job timeout in milliseconds
+
+## Monitoring
+
+### Get Job Status
+
+```typescript
+const status = await this.queueService.getJobStatus('email', 'job-id');
+```
+
+### Get Queue Statistics
+
+```typescript
+const stats = await this.queueService.getQueueStats('email');
+```
+
+### Clean Queue
+
+```typescript
+// Clean completed and failed jobs older than 24 hours
+await this.queueService.cleanQueue('email', 1000 * 60 * 60 * 24);
+```
+
+## Environment Variables
 
 ```env
-# Redis Configuration (for Queue)
+# Redis Configuration
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_PASSWORD=your_password
 REDIS_DB=0
 ```
+
+## Error Handling
+
+Failed jobs are automatically moved to the Dead Letter Queue (DLQ) with:
+
+- Original job data
+- Error information
+- Attempt count
+- Timestamp
+
+This allows for:
+
+- Error tracking
+- Job recovery
+- Failure analysis
+- Manual intervention if needed
 
 ## Contributing
 
