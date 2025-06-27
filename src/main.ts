@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { Logger } from 'nestjs-pino';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerProvider } from '@/providers/swagger/swagger.provider';
+import { formatCode, runMigrations } from './run-migrations';
 
 async function bootstrap() {
   try {
@@ -24,12 +25,16 @@ async function bootstrap() {
       return '';
     };
 
+    // Run migrations
+    runMigrations();
+    formatCode();
+    
     // Enable CORS with all origins
     app.enableCors({
       origin: true, // Allow all origins
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
       credentials: true,
-      allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+      allowedHeaders: '*',
     });
 
     // Setup Swagger

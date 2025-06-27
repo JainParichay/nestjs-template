@@ -6,7 +6,6 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 RUN npm run prisma:generate
-RUN npm run prisma:migrate
 
 COPY . .
 RUN npm run build
