@@ -1,16 +1,16 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import { createClient, RedisArgument, RedisClientType } from 'redis';
 import { Logger } from 'nestjs-pino';
 
 @Injectable()
 export class RedisProvider implements OnModuleInit, OnModuleDestroy {
-  private readonly redisClient: Redis;
+  private readonly redisClient: RedisClientType;
   private readonly logger: Logger;
   private readonly maxRetries: number;
   private readonly retryDelay: number;
   private retryCount: number = 0;
-  private subscribers: Map<string, Redis> = new Map();
+  private subscribers: Map<string, RedisClientType> = new Map();
 
   constructor(
     private readonly configService: ConfigService,
@@ -20,34 +20,9 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     this.maxRetries = this.configService.get('redis.maxRetries');
     this.retryDelay = this.configService.get('redis.retryDelay');
 
-    // this.redisClient = new Redis({
-    //   host: this.configService.get('redis.host'),
-    //   port: this.configService.get('redis.port'),
-    //   password: this.configService.get('redis.password'),
-    //   db: this.configService.get('redis.db'),
-    //   retryStrategy: this.retryStrategy.bind(this),
-    //   maxRetriesPerRequest: 3,
-    //   enableReadyCheck: true,
-    //   reconnectOnError: (err) => {
-    //     const targetError = 'READONLY';
-    //     if (err.message.includes(targetError)) {
-    //       return true;
-    //     }
-    //     return false;
-    //   },
-    // });
-
-    this.redisClient = new Redis(this.configService.get('redis.url'), {
-      retryStrategy: this.retryStrategy.bind(this),
-      maxRetriesPerRequest: 3,
-      enableReadyCheck: true,
-      reconnectOnError: (err) => {
-        const targetError = 'READONLY';
-        if (err.message.includes(targetError)) {
-          return true;
-        }
-        return false;
-      },
+    this.redisClient = createClient({
+      url: this.configService.get('redis.url'),
+      // Add other supported options if needed
     });
 
     this.setupEventListeners();
@@ -69,7 +44,6 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
   }
 
   private setupEventListeners() {
-    // Connection Events
     this.redisClient.on('connect', () => {
       this.logger.log('Redis client connected');
       this.retryCount = 0; // Reset retry count on successful connection
@@ -84,7 +58,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
       this.handleError(error);
     });
 
-    this.redisClient.on('close', () => {
+    this.redisClient.on('end', () => {
       this.logger.warn('Redis client connection closed');
     });
 
@@ -93,11 +67,6 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `Redis client reconnecting... Attempt ${this.retryCount}`,
       );
-    });
-
-    // Command Events
-    this.redisClient.on('command', (command) => {
-      this.logger.debug(`Redis command executed: ${command}`);
     });
   }
 
@@ -116,7 +85,6 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    // Implement exponential backoff for retries
     if (this.retryCount < this.maxRetries) {
       const delay = Math.min(
         Math.pow(2, this.retryCount) * this.retryDelay,
@@ -134,6 +102,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     try {
+      await this.redisClient.connect();
       await this.redisClient.ping();
       this.logger.log('Redis connection established successfully');
     } catch (error) {
@@ -149,15 +118,14 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  getClient(): Redis {
+  getClient(): RedisClientType {
     return this.redisClient;
   }
 
-  // Helper methods for common Redis operations with retry logic
   async set(key: string, value: string, ttl?: number): Promise<void> {
     try {
       if (ttl) {
-        await this.redisClient.set(key, value, 'EX', ttl);
+        await this.redisClient.set(key, value, { EX: ttl });
       } else {
         await this.redisClient.set(key, value);
       }
@@ -179,14 +147,14 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
   async getJson(key: string): Promise<any | null> {
     try {
       const value = await this.redisClient.get(key);
-      return value ? JSON.parse(value) : null;
+      return value ? JSON.parse(value as string) : null;
     } catch (error) {
       this.logger.error(`Error getting key ${key}: ${error.message}`);
       throw error;
     }
   }
 
-  async get(key: string): Promise<string | null> {
+  async get(key: string): Promise<string | { [key: string]: any } | null> {
     try {
       return await this.redisClient.get(key);
     } catch (error) {
@@ -195,9 +163,11 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async mget(keys: string[]): Promise<string[] | null> {
+  async mget(
+    keys: string[],
+  ): Promise<(string | { [key: string]: any } | null)[]> {
     try {
-      return await this.redisClient.mget(keys);
+      return await this.redisClient.mGet(keys);
     } catch (error) {
       this.logger.error(`Error getting keys ${keys}: ${error.message}`);
       throw error;
@@ -300,7 +270,6 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Health check method
   async healthCheck(): Promise<boolean> {
     try {
       await this.redisClient.ping();
@@ -311,10 +280,9 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Hash Operations
   async hset(key: string, field: string, value: string): Promise<void> {
     try {
-      await this.redisClient.hset(key, field, value);
+      await this.redisClient.hSet(key, field, value);
     } catch (error) {
       this.logger.error(
         `Error setting hash field ${field} for key ${key}: ${error.message}`,
@@ -323,9 +291,12 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async hget(key: string, field: string): Promise<string | null> {
+  async hget(
+    key: string,
+    field: string,
+  ): Promise<string | { [key: string]: any } | null> {
     try {
-      return await this.redisClient.hget(key, field);
+      return await this.redisClient.hGet(key, field);
     } catch (error) {
       this.logger.error(
         `Error getting hash field ${field} for key ${key}: ${error.message}`,
@@ -336,7 +307,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async hgetall(key: string): Promise<Record<string, string>> {
     try {
-      return await this.redisClient.hgetall(key);
+      return await this.redisClient.hGetAll(key);
     } catch (error) {
       this.logger.error(
         `Error getting all hash fields for key ${key}: ${error.message}`,
@@ -347,7 +318,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async hdel(key: string, field: string): Promise<void> {
     try {
-      await this.redisClient.hdel(key, field);
+      await this.redisClient.hDel(key, field);
     } catch (error) {
       this.logger.error(
         `Error deleting hash field ${field} for key ${key}: ${error.message}`,
@@ -356,10 +327,9 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // List Operations
   async lpush(key: string, value: string): Promise<void> {
     try {
-      await this.redisClient.lpush(key, value);
+      await this.redisClient.lPush(key, value);
     } catch (error) {
       this.logger.error(`Error pushing to list ${key}: ${error.message}`);
       throw error;
@@ -368,7 +338,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async rpush(key: string, value: string): Promise<void> {
     try {
-      await this.redisClient.rpush(key, value);
+      await this.redisClient.rPush(key, value);
     } catch (error) {
       this.logger.error(`Error pushing to list ${key}: ${error.message}`);
       throw error;
@@ -377,7 +347,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async lrange(key: string, start: number, stop: number): Promise<string[]> {
     try {
-      return await this.redisClient.lrange(key, start, stop);
+      return await this.redisClient.lRange(key, start, stop);
     } catch (error) {
       this.logger.error(
         `Error getting range from list ${key}: ${error.message}`,
@@ -386,10 +356,9 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Set Operations
   async sadd(key: string, member: string): Promise<void> {
     try {
-      await this.redisClient.sadd(key, member);
+      await this.redisClient.sAdd(key, member);
     } catch (error) {
       this.logger.error(`Error adding member to set ${key}: ${error.message}`);
       throw error;
@@ -398,7 +367,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async srem(key: string, member: string): Promise<void> {
     try {
-      await this.redisClient.srem(key, member);
+      await this.redisClient.sRem(key, member);
     } catch (error) {
       this.logger.error(
         `Error removing member from set ${key}: ${error.message}`,
@@ -409,7 +378,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async smembers(key: string): Promise<string[]> {
     try {
-      return await this.redisClient.smembers(key);
+      return await this.redisClient.sMembers(key);
     } catch (error) {
       this.logger.error(
         `Error getting members of set ${key}: ${error.message}`,
@@ -418,10 +387,9 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Sorted Set Operations
   async zadd(key: string, score: number, member: string): Promise<void> {
     try {
-      await this.redisClient.zadd(key, score, member);
+      await this.redisClient.zAdd(key, [{ score, value: member }]);
     } catch (error) {
       this.logger.error(
         `Error adding member to sorted set ${key}: ${error.message}`,
@@ -432,7 +400,7 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
 
   async zrange(key: string, start: number, stop: number): Promise<string[]> {
     try {
-      return await this.redisClient.zrange(key, start, stop);
+      return await this.redisClient.zRange(key, start, stop);
     } catch (error) {
       this.logger.error(
         `Error getting range from sorted set ${key}: ${error.message}`,
@@ -441,36 +409,16 @@ export class RedisProvider implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // Pipeline Operations
-  async pipeline(operations: Array<() => Promise<any>>): Promise<any[]> {
-    try {
-      const pipeline = this.redisClient.pipeline();
-      for (const operation of operations) {
-        await operation();
-      }
-      return await pipeline.exec();
-    } catch (error) {
-      this.logger.error(
-        `Error executing pipeline operations: ${error.message}`,
-      );
-      throw error;
-    }
-  }
-
-  // Scan Operations (for large datasets)
   async scan(
-    cursor: number,
+    cursor: RedisArgument,
     pattern: string,
     count: number = 100,
-  ): Promise<[string, string[]]> {
+  ): Promise<{ cursor: string; keys: string[] }> {
     try {
-      return await this.redisClient.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        count,
-      );
+      return await this.redisClient.scan(cursor, {
+        MATCH: pattern,
+        COUNT: count,
+      });
     } catch (error) {
       this.logger.error(
         `Error scanning keys with pattern ${pattern}: ${error.message}`,
